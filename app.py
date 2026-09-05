@@ -8,6 +8,7 @@ Deploy on Streamlit Community Cloud:
 3. In the app's "Secrets" settings, add:
 
     GEMINI_API_KEY = "your-gemini-api-key"
+    TAVILY_API_KEY = "your-tavily-api-key"
     GMAIL_ADDRESS = "youraddress@gmail.com"
     GMAIL_APP_PASSWORD = "your-16-char-app-password"
 
@@ -15,9 +16,12 @@ Deploy on Streamlit Community Cloud:
    Without them the agent will still search, match and draft the application,
    it just won't send it.)
 
-Job search uses Gemini's native Google Search grounding tool rather than
-scraping DuckDuckGo directly — this avoids cloud-host IP blocks and needs
-no extra API key beyond GEMINI_API_KEY.
+Job search uses Tavily (https://tavily.com), a search API built for AI
+agents with a free tier (1,000 searches/month, no credit card). The
+original notebook scraped DuckDuckGo directly, which most cloud hosts
+block; a Gemini Google-Search-grounding attempt also failed because that
+feature has its own very low free-tier quota. Tavily needs its own
+TAVILY_API_KEY, separate from GEMINI_API_KEY.
 """
 
 import os
@@ -29,6 +33,7 @@ from email.mime.text import MIMEText
 
 import streamlit as st
 from pypdf import PdfReader
+from tavily import TavilyClient
 
 from google import genai
 from google.genai import types
@@ -62,6 +67,7 @@ def get_secret(key: str) -> str | None:
 GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
 GMAIL_ADDRESS = get_secret("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = get_secret("GMAIL_APP_PASSWORD")
+TAVILY_API_KEY = get_secret("TAVILY_API_KEY")
 
 GEMINI_MODEL = "gemini-3.1-flash-lite"
 
@@ -79,7 +85,7 @@ def get_client(api_key: str):
 
 
 # ============================================================
-# 1. SEARCH JOBS (Gemini + native Google Search grounding)
+# 1. SEARCH JOBS (Tavily Search API)
 # ============================================================
 #
 # NOTE ON THIS CHANGE:
@@ -89,48 +95,38 @@ def get_client(api_key: str):
 # aggressively blocks or CAPTCHAs — so the scrape silently returns zero
 # results once deployed, even though nothing in the Python code is "broken".
 #
-# This version instead uses Gemini's built-in Google Search grounding tool
-# (`types.Tool(google_search=types.GoogleSearch())`). The search runs on
-# Google's own infrastructure, not from your app's server, so it isn't
-# subject to that IP-blocking problem, and it needs no extra API key beyond
-# the GEMINI_API_KEY you already have configured.
+# A first fix attempt used Gemini's built-in Google Search grounding tool,
+# but that feature has its own separate, very strict quota on the free
+# tier (often effectively zero), so it immediately hit 429 RESOURCE_EXHAUSTED.
+#
+# This version uses Tavily (https://tavily.com) — a search API built
+# specifically for AI agents, with a free tier of 1,000 searches/month and
+# no credit card required. It needs its own API key, stored as the
+# TAVILY_API_KEY secret.
 
 
-def search_jobs(query: str, client, log) -> str:
-    try:
-        log(f"🔎 Searching for jobs (Google Search grounding): {query}")
-
-        grounding_tool = types.Tool(google_search=types.GoogleSearch())
-
-        search_prompt = f"""
-Search for REAL, currently open job postings matching:
-{query}
-
-Return up to 8 distinct postings. For EACH one, output in this exact format:
-
-JOB RESULT
-TITLE: <exact job title>
-COMPANY: <company name, or "Unknown" if not visible>
-LOCATION: <location>
-URL: <direct URL to the posting>
-
-Only include postings you can verify from real search results.
-Do not invent any job, company, location, or URL.
-If you find no real postings, respond with exactly: NO_RESULTS
-"""
-
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=search_prompt,
-            config=types.GenerateContentConfig(
-                tools=[grounding_tool],
-                temperature=0.1,
-            ),
+def search_jobs(query: str, log) -> str:
+    if not TAVILY_API_KEY:
+        log("❌ TAVILY_API_KEY is not configured.")
+        return (
+            "JOB SEARCH FAILED\n\n"
+            "Error:\nMissing TAVILY_API_KEY secret.\n\n"
+            "DO NOT INVENT JOB INFORMATION.\n"
         )
 
-        result_text = (response.text or "").strip()
+    try:
+        log(f"🔎 Searching for jobs (Tavily): {query}")
 
-        if not result_text or "NO_RESULTS" in result_text:
+        tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
+        response = tavily_client.search(
+            query=query,
+            search_depth="basic",
+            max_results=8,
+        )
+
+        results = response.get("results", [])
+
+        if not results:
             log("⚠️ No job results found.")
             return (
                 "NO JOB SEARCH RESULTS FOUND.\n\n"
@@ -138,9 +134,18 @@ If you find no real postings, respond with exactly: NO_RESULTS
                 "DO NOT INVENT:\n- Job\n- Company\n- URL\n- Email\n"
             )
 
-        result_count = result_text.count("JOB RESULT")
-        log(f"✅ Found {max(result_count, 1)} job result(s).")
-        return result_text
+        formatted_results = []
+        for i, result in enumerate(results, 1):
+            title = result.get("title", "Untitled")
+            url = result.get("url", "")
+            snippet = (result.get("content", "") or "")[:400]
+            formatted_results.append(
+                f"\nJOB RESULT {i}\n"
+                f"{'=' * 50}\n\nTITLE:\n{title}\n\nURL:\n{url}\n\nSNIPPET:\n{snippet}\n"
+            )
+
+        log(f"✅ Found {len(results)} job results.")
+        return "\n".join(formatted_results)
 
     except Exception as e:
         log(f"❌ Job search error: {str(e)}")
@@ -423,7 +428,7 @@ Begin by requesting the job search.
                 if "\n" in search_query:
                     search_query = search_query.split("\n")[0].strip()
 
-                search_results = search_jobs(search_query, client, log)
+                search_results = search_jobs(search_query, log)
 
                 conversation = f"""
 {conversation}
@@ -548,12 +553,17 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if GEMINI_API_KEY:
+if GEMINI_API_KEY and TAVILY_API_KEY:
     st.success("🟢 AI Agent Ready", icon="✅")
 else:
+    missing = []
+    if not GEMINI_API_KEY:
+        missing.append("GEMINI_API_KEY")
+    if not TAVILY_API_KEY:
+        missing.append("TAVILY_API_KEY")
     st.error(
-        "🔴 GEMINI_API_KEY is not set. Add it to Streamlit secrets (Settings → Secrets) "
-        "or as an environment variable before running the agent.",
+        f"🔴 Missing secret(s): {', '.join(missing)}. Add them under "
+        "Settings → Secrets before running the agent.",
         icon="⚠️",
     )
 
@@ -624,6 +634,9 @@ if launch:
     if not GEMINI_API_KEY:
         with col_right:
             status_placeholder.error("❌ Missing GEMINI_API_KEY — cannot start agent.")
+    elif not TAVILY_API_KEY:
+        with col_right:
+            status_placeholder.error("❌ Missing TAVILY_API_KEY — cannot search for jobs.")
     else:
         with col_right:
             status_placeholder.warning("🟡 Agent running...")
