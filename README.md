@@ -67,6 +67,8 @@ send the final email; it will present it as "Application Prepared - Not Sent".
    GEMINI_API_KEY = "your-gemini-api-key"
    GMAIL_ADDRESS = "youraddress@gmail.com"
    GMAIL_APP_PASSWORD = "your-app-password"
+   TAVILY_API_KEY = "your-tavily-api-key"
+
    ```
 
 5. Click **Deploy**. Streamlit Cloud installs `requirements.txt` automatically.
