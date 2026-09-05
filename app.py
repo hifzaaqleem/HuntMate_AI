@@ -14,6 +14,10 @@ Deploy on Streamlit Community Cloud:
    (GMAIL_* are only required if you want the agent to actually send emails.
    Without them the agent will still search, match and draft the application,
    it just won't send it.)
+
+Job search uses Gemini's native Google Search grounding tool rather than
+scraping DuckDuckGo directly — this avoids cloud-host IP blocks and needs
+no extra API key beyond GEMINI_API_KEY.
 """
 
 import os
@@ -22,9 +26,7 @@ import smtplib
 import traceback
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from urllib.parse import quote, unquote
 
-import requests
 import streamlit as st
 from pypdf import PdfReader
 
@@ -77,50 +79,58 @@ def get_client(api_key: str):
 
 
 # ============================================================
-# 1. SEARCH JOBS (DuckDuckGo HTML search — no API key needed)
+# 1. SEARCH JOBS (Gemini + native Google Search grounding)
 # ============================================================
+#
+# NOTE ON THIS CHANGE:
+# The original notebook scraped DuckDuckGo's HTML search page directly.
+# That works fine from a Colab notebook, but most cloud hosts (Streamlit
+# Community Cloud included) run on data-center IP ranges that DuckDuckGo
+# aggressively blocks or CAPTCHAs — so the scrape silently returns zero
+# results once deployed, even though nothing in the Python code is "broken".
+#
+# This version instead uses Gemini's built-in Google Search grounding tool
+# (`types.Tool(google_search=types.GoogleSearch())`). The search runs on
+# Google's own infrastructure, not from your app's server, so it isn't
+# subject to that IP-blocking problem, and it needs no extra API key beyond
+# the GEMINI_API_KEY you already have configured.
 
 
-def search_jobs(query: str, log) -> str:
+def search_jobs(query: str, client, log) -> str:
     try:
-        log(f"🔎 Searching for jobs: {query}")
+        log(f"🔎 Searching for jobs (Google Search grounding): {query}")
 
-        search_url = "https://html.duckduckgo.com/html/?q=" + quote(query)
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0 Safari/537.36"
-            )
-        }
+        grounding_tool = types.Tool(google_search=types.GoogleSearch())
 
-        response = requests.get(search_url, headers=headers, timeout=20)
-        response.raise_for_status()
-        html = response.text
+        search_prompt = f"""
+Search for REAL, currently open job postings matching:
+{query}
 
-        pattern = re.compile(
-            r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
-            re.IGNORECASE | re.DOTALL,
+Return up to 8 distinct postings. For EACH one, output in this exact format:
+
+JOB RESULT
+TITLE: <exact job title>
+COMPANY: <company name, or "Unknown" if not visible>
+LOCATION: <location>
+URL: <direct URL to the posting>
+
+Only include postings you can verify from real search results.
+Do not invent any job, company, location, or URL.
+If you find no real postings, respond with exactly: NO_RESULTS
+"""
+
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=search_prompt,
+            config=types.GenerateContentConfig(
+                tools=[grounding_tool],
+                temperature=0.1,
+            ),
         )
-        matches = pattern.findall(html)
 
-        results = []
-        for href, title_html in matches[:10]:
-            title = re.sub(r"<.*?>", "", title_html).strip()
-            title = unquote(title)
+        result_text = (response.text or "").strip()
 
-            if "uddg=" in href:
-                try:
-                    url = unquote(href.split("uddg=", 1)[1].split("&", 1)[0])
-                except Exception:
-                    url = href
-            else:
-                url = href
-
-            if url.startswith("http"):
-                results.append({"title": title, "url": url})
-
-        if not results:
+        if not result_text or "NO_RESULTS" in result_text:
             log("⚠️ No job results found.")
             return (
                 "NO JOB SEARCH RESULTS FOUND.\n\n"
@@ -128,15 +138,9 @@ def search_jobs(query: str, log) -> str:
                 "DO NOT INVENT:\n- Job\n- Company\n- URL\n- Email\n"
             )
 
-        formatted_results = []
-        for i, result in enumerate(results, 1):
-            formatted_results.append(
-                f"\nJOB RESULT {i}\n"
-                f"{'=' * 50}\n\nTITLE:\n{result['title']}\n\nURL:\n{result['url']}\n"
-            )
-
-        log(f"✅ Found {len(results)} job results.")
-        return "\n".join(formatted_results)
+        result_count = result_text.count("JOB RESULT")
+        log(f"✅ Found {max(result_count, 1)} job result(s).")
+        return result_text
 
     except Exception as e:
         log(f"❌ Job search error: {str(e)}")
@@ -419,7 +423,7 @@ Begin by requesting the job search.
                 if "\n" in search_query:
                     search_query = search_query.split("\n")[0].strip()
 
-                search_results = search_jobs(search_query, log)
+                search_results = search_jobs(search_query, client, log)
 
                 conversation = f"""
 {conversation}
