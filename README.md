@@ -1,4 +1,4 @@
-# ✨ Gemini Career Agent (Streamlit)
+# ✨ HuntMate AI (Streamlit)
 
 An autonomous AI job-application agent, originally built as a Google Colab
 notebook with a Gradio UI, converted here to a **Streamlit** app so it can be
