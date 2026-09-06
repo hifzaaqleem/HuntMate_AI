@@ -547,7 +547,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.markdown('<div class="hero-title">✨ Gemini Career Agent</div>', unsafe_allow_html=True)
+st.markdown('<div class="hero-title">✨ HuntMate AI</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="hero-subtitle">Autonomous AI-powered job discovery and application assistant</div>',
     unsafe_allow_html=True,
@@ -683,6 +683,6 @@ with w4:
 
 st.markdown(
     '<div style="text-align:center; padding:25px 0 5px 0; font-size:12px; opacity:0.5;">'
-    "Gemini Career Agent • Generative AI</div>",
+    "HuntMate AI• Generative AI</div>",
     unsafe_allow_html=True,
 )
