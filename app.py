@@ -1,5 +1,5 @@
 """
-Gemini Career Agent — Autonomous Job Application Assistant
+HuntMate AI — Autonomous Job Application Assistant
 Streamlit version (converted from the original Gradio / Colab notebook)
 
 Deploy on Streamlit Community Cloud:
@@ -44,7 +44,7 @@ from google.genai.types import HttpOptions, HttpRetryOptions
 # ============================================================
 
 st.set_page_config(
-    page_title="Gemini Career Agent",
+    page_title="HuntMate AI",
     page_icon="✨",
     layout="wide",
 )
